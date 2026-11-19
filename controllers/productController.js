@@ -1,15 +1,54 @@
 const pool = require("../config/db");
 const fs = require("fs/promises");
 const path = require("path");
+const cloudinary = require("cloudinary").v2;
+
+if (process.env.CLOUDINARY_URL) {
+    cloudinary.config({ cloudinary_url: process.env.CLOUDINARY_URL });
+} else if (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY) {
+    cloudinary.config({
+        cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+        api_key: process.env.CLOUDINARY_API_KEY,
+        api_secret: process.env.CLOUDINARY_API_SECRET,
+    });
+}
+
+async function resolveProductImage(file, bodyImage) {
+    if (file) {
+        const isCloudinaryConfigured = Boolean(
+            process.env.CLOUDINARY_URL ||
+            (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY)
+        );
+
+        if (isCloudinaryConfigured) {
+            try {
+                const uploadRes = await cloudinary.uploader.upload(file.path, {
+                    folder: "hawkeye_products",
+                    resource_type: "image",
+                });
+                // Remove local temporary file
+                await fs.unlink(file.path).catch(() => {});
+                return uploadRes.secure_url;
+            } catch (err) {
+                console.error("Cloudinary upload failed, falling back to local storage:", err.message);
+            }
+        }
+        return `/uploads/${file.filename}`;
+    }
+
+    if (bodyImage && typeof bodyImage === "string" && bodyImage.trim() !== "") {
+        return bodyImage.trim();
+    }
+
+    return null;
+}
 
 // Add product (Admin)
 exports.addProductController = async (req, res) => {
     try {
         const { name, model, category, brand, type, description, price } = req.body;
 
-        const uploadimage = req.file
-            ? `/uploads/${req.file.filename}`
-            : req.body.image;
+        const uploadimage = await resolveProductImage(req.file, req.body.image);
 
         if (!name || !model || !category || !brand || !description || !uploadimage) {
             return res.status(400).json({
@@ -143,9 +182,9 @@ exports.updateProductController = async (req, res) => {
 
         let image = current.image;
         if (req.file) {
-            image = `/uploads/${req.file.filename}`;
-        } else if (req.body.image) {
-            image = req.body.image;
+            image = await resolveProductImage(req.file);
+        } else if (req.body.image && typeof req.body.image === "string" && req.body.image.trim() !== "") {
+            image = req.body.image.trim();
         }
 
         await pool.query(
